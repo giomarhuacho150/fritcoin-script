@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# 1. Configurar Netplan PRIMERO en enp1s0 para tener IP (192.168.100.220) e Internet
+# 1. Limpiar tarjeta enp1s0 y configurar IP estatica (192.168.100.220) con Netplan
+sudo ip addr flush dev enp1s0 2>/dev/null
 sudo rm -f /etc/netplan/*.yaml
 
 cat << 'EOF' | sudo tee /etc/netplan/01-netcfg.yaml
@@ -21,19 +22,31 @@ EOF
 
 sudo chmod 600 /etc/netplan/01-netcfg.yaml
 sudo netplan apply
-sleep 3
+sleep 2
 
-# 2. Instalar los paquetes necesarios
-sudo apt update
-sudo apt install -y isc-dhcp-server bind9 bind9utils
+# Asegurar IP, ruta y DNS en vivo por si netplan tarda en aplicar
+sudo ip addr add 192.168.100.220/24 dev enp1s0 2>/dev/null
+sudo ip route replace default via 192.168.100.1 2>/dev/null
+sudo rm -f /etc/resolv.conf
+cat << 'EOF' | sudo tee /etc/resolv.conf
+nameserver 127.0.0.1
+nameserver 9.9.9.9
+nameserver 149.112.112.112
+search fritcoin.local
+EOF
 
-# 3. Configurar interfaz del servidor DHCP en enp1s0
+# 2. Instalar paquetes (solo si no estan instalados ya)
+if ! dpkg -l | grep -q isc-dhcp-server || ! dpkg -l | grep -q bind9; then
+  sudo apt update
+  sudo apt install -y isc-dhcp-server bind9 bind9utils
+fi
+
+# 3. Configurar DHCP en la tarjeta correcta (enp1s0)
 cat << 'EOF' | sudo tee /etc/default/isc-dhcp-server
 INTERFACESv4="enp1s0"
 INTERFACESv6=""
 EOF
 
-# 4. Configurar ambitos y reservas DHCP
 cat << 'EOF' | sudo tee /etc/dhcp/dhcpd.conf
 default-lease-time 600;
 max-lease-time 7200;
@@ -75,7 +88,7 @@ subnet 192.168.200.0 netmask 255.255.255.0 {
 }
 EOF
 
-# 5. Configurar DNS (BIND9) permitiendo consultas desde las subredes .150 y .200
+# 4. Configurar DNS (BIND9) con permisos para todas las subredes (.100, .150 y .200)
 cat << 'EOF' | sudo tee /etc/bind/named.conf.options
 options {
   directory "/var/cache/bind";
@@ -167,10 +180,13 @@ $TTL 604800
 120 IN PTR inter.fritcoin.local.
 EOF
 
-# 6. Habilitar, reiniciar y comprobar estado
+# 5. Validar sintaxis, habilitar y reiniciar servicios
+sudo named-checkconf
+sudo dhcpd -t -cf /etc/dhcp/dhcpd.conf
 sudo systemctl enable isc-dhcp-server named
 sudo systemctl restart isc-dhcp-server named
 sudo systemctl --no-pager status isc-dhcp-server named
+
 echo "=========================================="
 echo " ¡TODO CONFIGURADO Y FUNCIONANDO AL 100%!"
 echo "=========================================="
